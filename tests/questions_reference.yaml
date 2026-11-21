@@ -1,0 +1,36 @@
+# Questions de référence (PDF "Attention is all you need") — à compléter
+- id: Q1
+  question: Combien de têtes d'attention utilise le modèle de base ?
+  modalite: texte/tableau
+  attendu: "h = 8"
+  source: "p.5 / Table 3"
+- id: Q2
+  question: Quel score BLEU obtient le Transformer (big) en anglais-allemand ?
+  modalite: tableau
+  attendu: "28.4"
+  source: "Table 2, p.8"
+- id: Q3
+  question: Que représente la Figure 1 ?
+  modalite: image
+  attendu: "architecture du Transformer (encodeur / décodeur)"
+  source: "Figure 1, p.3"
+- id: Q4
+  question: Quelle est la complexité par couche de la self-attention ?
+  modalite: tableau
+  attendu: "O(n² · d)"
+  source: "Table 1, p.6"
+- id: Q5
+  question: Pourquoi divise-t-on les produits scalaires par la racine de d_k ?
+  modalite: texte
+  attendu: "éviter des valeurs trop grandes qui saturent le softmax (petits gradients)"
+  source: "§3.2.1, p.4"
+- id: Q6
+  question: Montre-moi le schéma du multi-head attention
+  modalite: image
+  attendu: "Figure 2 (droite)"
+  source: "Figure 2, p.4"
+- id: Q7
+  question: Quel est le prix d'une pizza ?
+  modalite: hors sujet
+  attendu: "refus / pas d'information dans les documents"
+  source: "-"

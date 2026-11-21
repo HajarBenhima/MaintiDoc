@@ -1,0 +1,34 @@
+# Indexation (LlamaIndex + PyMuPDF + PGVector)
+llama-index-core>=0.12
+llama-index-readers-file
+llama-index-vector-stores-postgres
+llama-index-embeddings-huggingface
+pymupdf>=1.24
+psycopg2-binary
+sqlalchemy
+asyncpg
+
+# Modèles (embeddings, CLIP)
+torch
+transformers
+sentence-transformers
+pillow
+
+# LLM / agent
+ollama
+langchain>=1.0
+langchain-core
+langchain-ollama
+langgraph
+
+# Interface / API
+streamlit
+fastapi
+uvicorn
+python-multipart
+
+# Utilitaires
+python-dotenv
+pydantic>=2
+pyyaml
+pytest

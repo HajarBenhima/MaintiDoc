@@ -1,0 +1,216 @@
+"""Extraction du texte, des tableaux et des images d'un PDF.
+
+Texte : PyMuPDFReader (LlamaIndex), un Document par page.
+Tableaux : deux méthodes complémentaires
+  1. ancrage sur la légende « Table N: » + filets horizontaux (tableaux style LaTeX/booktabs,
+     sans bordures verticales, que find_tables() découpe mal) ;
+  2. page.find_tables() pour les tableaux à bordures (fréquents dans les manuels techniques).
+Images : PyMuPDF extract_image -> PNG dans data/images/<document_id>/.
+"""
+from dataclasses import dataclass, field
+from pathlib import Path
+import re
+
+import pymupdf
+from llama_index.core import Document
+from llama_index.readers.file import PyMuPDFReader
+
+from maintidoc.config import IMAGE_DIR
+
+MIN_IMG_SIZE = 100       # ignore logos / icônes
+CAPTION_RE = re.compile(r"^(Table|Tableau)\s+(\d+)\s*[:.]", re.IGNORECASE)
+FIGURE_RE = re.compile(r"^(Figure|Fig\.|Schéma)\s*(\d+)\s*[:.]", re.IGNORECASE)
+RULE_MAX_GAP = 90        # écart max (pt) entre deux filets d'un même tableau
+CAPTION_MAX_GAP = 40     # écart max (pt) entre la légende et le premier filet
+COL_GAP = 8              # écart horizontal (pt) qui sépare deux colonnes
+
+
+@dataclass
+class ParsedPDF:
+    document_id: str
+    source: str
+    text_docs: list[Document] = field(default_factory=list)
+    table_docs: list[Document] = field(default_factory=list)
+    images: list[dict] = field(default_factory=list)
+
+    @property
+    def page_texts(self) -> dict[int, str]:
+        return {d.metadata["page"]: d.text for d in self.text_docs}
+
+
+def make_document_id(pdf_path: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", pdf_path.stem).strip("_")
+
+
+# ---------------------------------------------------------------- tableaux
+def _horizontal_rules(page) -> list[float]:
+    ys = set()
+    for dr in page.get_drawings():
+        for it in dr["items"]:
+            if it[0] == "re":
+                r = it[1]
+            elif it[0] == "l":
+                r = pymupdf.Rect(it[1], it[2])
+            else:
+                continue
+            if r.height < 2 and r.width > 50:
+                ys.add(round(r.y0, 1))
+    return sorted(ys)
+
+
+def _chain(rules: list[float], start: float, forward: bool) -> list[float]:
+    """Suite de filets proches les uns des autres à partir de `start`."""
+    seq = rules if forward else list(reversed(rules))
+    near = [y for y in seq if (0 <= y - start <= CAPTION_MAX_GAP if forward
+                               else 0 <= start - y <= CAPTION_MAX_GAP)]
+    if not near:
+        return []
+    out = [near[0]]
+    for y in seq[seq.index(near[0]) + 1:]:
+        if abs(y - out[-1]) > RULE_MAX_GAP:
+            break
+        out.append(y)
+    return sorted(out)
+
+
+def _rows_text(page, rect) -> str:
+    """Reconstitue les lignes du tableau ; « | » entre colonnes éloignées."""
+    words = sorted(page.get_text("words", clip=rect), key=lambda w: (round(w[3]), w[0]))
+    lines, current, last_y = [], [], None
+    for w in words:
+        if last_y is not None and abs(w[3] - last_y) > 3:
+            lines.append(current)
+            current = []
+        current.append(w)
+        last_y = w[3]
+    if current:
+        lines.append(current)
+    out = []
+    for ln in lines:
+        ln.sort(key=lambda w: w[0])
+        s = ln[0][4]
+        for prev, w in zip(ln, ln[1:]):
+            s += (" | " if w[0] - prev[2] > COL_GAP else " ") + w[4]
+        out.append(s)
+    return "\n".join(out)
+
+
+def _caption_tables(page) -> list[tuple[str, str, pymupdf.Rect]]:
+    """Tableaux repérés par leur légende. Renvoie [(légende, contenu, bbox)]."""
+    rules = _horizontal_rules(page)
+    found = []
+    for x0, y0, x1, y1, text, *_ in page.get_text("blocks"):
+        if not CAPTION_RE.match(text.strip()):
+            continue
+        chain = _chain(rules, y1, forward=True) or _chain(rules, y0, forward=False)
+        if len(chain) < 2:
+            continue
+        rect = pymupdf.Rect(page.rect.x0, chain[0] - 1, page.rect.x1, chain[-1] + 1)
+        content = _rows_text(page, rect)
+        if content.strip():
+            found.append((" ".join(text.split()), content, rect))
+    return found
+
+
+def _extract_tables(page, pno: int, base_meta: dict) -> list[Document]:
+    docs = []
+    caption_rects = []
+    for caption, content, rect in _caption_tables(page):
+        num = CAPTION_RE.match(caption).group(2)
+        caption_rects.append(rect)
+        docs.append(Document(
+            text=f"{caption}\n(page {pno})\n{content}",
+            metadata={**base_meta, "page": pno, "type": "table",
+                      "element_id": f"table_{num}", "caption": caption[:300]},
+        ))
+    # Tableaux à bordures non déjà couverts par la méthode légende
+    for t_idx, tab in enumerate(page.find_tables().tables):
+        bbox = pymupdf.Rect(tab.bbox)
+        if any(bbox.intersects(r) for r in caption_rects):
+            continue
+        md = tab.to_markdown()
+        if md.strip():
+            docs.append(Document(
+                text=f"Tableau (page {pno}) :\n{md}",
+                metadata={**base_meta, "page": pno, "type": "table",
+                          "element_id": f"table_p{pno}_{t_idx}"},
+            ))
+    return docs
+
+
+# ---------------------------------------------------------------- images
+def _figure_captions(page) -> list[tuple[str, str, pymupdf.Rect]]:
+    """Légendes « Figure N: » de la page : [(numéro, texte, bbox)]."""
+    out = []
+    for x0, y0, x1, y1, text, *_ in page.get_text("blocks"):
+        m = FIGURE_RE.match(text.strip())
+        if m:
+            out.append((m.group(2), " ".join(text.split())[:400], pymupdf.Rect(x0, y0, x1, y1)))
+    return out
+
+
+def _closest_caption(captions, img_rect):
+    """Légende la plus proche, en privilégiant celles situées sous l'image."""
+    if not captions:
+        return None
+    if img_rect is None:
+        return captions[0] if len(captions) == 1 else None
+
+    def dist(c):
+        below = c[2].y0 >= img_rect.y1 - 5
+        return (0 if below else 1, abs(c[2].y0 - img_rect.y1))
+    return min(captions, key=dist)
+
+
+def _extract_images(pdf, page, pno: int, base_meta: dict, out_dir: Path) -> list[dict]:
+    images = []
+    captions = _figure_captions(page)
+    for i_idx, img in enumerate(page.get_images(full=True)):
+        xref = img[0]
+        info = pdf.extract_image(xref)
+        if info["width"] < MIN_IMG_SIZE or info["height"] < MIN_IMG_SIZE:
+            continue
+        pix = pymupdf.Pixmap(pdf, xref)
+        if pix.alpha:                       # supprimer le canal alpha
+            pix = pymupdf.Pixmap(pix, 0)
+        if pix.n >= 4:                      # CMYK -> RGB
+            pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+        path = out_dir / f"p{pno}_img{i_idx}.png"
+        pix.save(path)
+        rects = page.get_image_rects(xref)
+        cap = _closest_caption(captions, rects[0] if rects else None)
+        images.append({
+            **base_meta, "page": pno, "type": "image",
+            "element_id": f"figure_{pno}_{i_idx}",
+            "figure_label": f"Figure {cap[0]}" if cap else "",
+            "figure_caption": cap[1] if cap else "",
+            "image_path": str(path),
+            "width": info["width"], "height": info["height"],
+        })
+    return images
+
+
+# ---------------------------------------------------------------- point d'entrée
+def parse_pdf(pdf_path: str | Path, extract_images: bool = True) -> ParsedPDF:
+    pdf_path = Path(pdf_path)
+    doc_id = make_document_id(pdf_path)
+    base_meta = {"document_id": doc_id, "source": pdf_path.name}
+    result = ParsedPDF(document_id=doc_id, source=pdf_path.name)
+
+    # 1. Texte (un Document LlamaIndex par page)
+    pages = PyMuPDFReader().load_data(file_path=pdf_path)
+    for i, p in enumerate(pages, start=1):
+        if p.text.strip():
+            result.text_docs.append(
+                Document(text=p.text, metadata={**base_meta, "page": i, "type": "text"})
+            )
+
+    # 2. Tableaux et 3. Images
+    out_dir = Path(IMAGE_DIR) / doc_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with pymupdf.open(pdf_path) as pdf:
+        for pno, page in enumerate(pdf, start=1):
+            result.table_docs += _extract_tables(page, pno, base_meta)
+            if extract_images:
+                result.images += _extract_images(pdf, page, pno, base_meta, out_dir)
+    return result
