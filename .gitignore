@@ -7,3 +7,6 @@ data/images/*
 .pytest_cache/
 .DS_Store
 *.egg-info/
+# Documents tiers (droits réservés) : non versionnés, voir README
+data/pdfs/*
+!data/pdfs/attention is all you need.pdf

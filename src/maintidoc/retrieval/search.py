@@ -1,25 +1,57 @@
-"""Fonctions de recherche (texte, tableaux, descriptions, CLIP)."""
+"""Fonctions de recherche (texte, tableaux, descriptions, CLIP).
+
+- filtre optionnel par document (doc_names) ;
+- requête multilingue : question d'origine + reformulation anglaise, résultats fusionnés.
+"""
 from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import MetadataMode, NodeWithScore
-from llama_index.core.vector_stores import (ExactMatchFilter, MetadataFilters,
-                                            VectorStoreQuery)
+from llama_index.core.vector_stores import (FilterOperator, MetadataFilter,
+                                            MetadataFilters, VectorStoreQuery)
 
+from maintidoc.retrieval.query import translate_query
 from maintidoc.retrieval.stores import image_store, text_embed_model, text_store
 
 
-def search_text(query: str, k: int = 5, type_: str | None = None) -> list[NodeWithScore]:
+def build_filters(type_: str | None = None,
+                  doc_names: list[str] | None = None) -> MetadataFilters | None:
+    filters = []
+    if type_:
+        filters.append(MetadataFilter(key="type", value=type_))
+    if doc_names:
+        filters.append(MetadataFilter(key="doc_name", value=list(doc_names),
+                                      operator=FilterOperator.IN))
+    return MetadataFilters(filters=filters) if filters else None
+
+
+def search_queries(query: str, translate: bool = True) -> list[str]:
+    queries = [query]
+    en = translate_query(query) if translate else ""
+    if en and en.lower() != query.lower():
+        queries.append(en)
+    return queries
+
+
+def search_text(query: str, k: int = 5, type_: str | None = None,
+                doc_names: list[str] | None = None,
+                translate: bool = True) -> list[NodeWithScore]:
     """type_ : None (tout), 'text', 'table' ou 'image_description'."""
     index = VectorStoreIndex.from_vector_store(text_store(), embed_model=text_embed_model())
-    filters = (MetadataFilters(filters=[ExactMatchFilter(key="type", value=type_)])
-               if type_ else None)
-    return index.as_retriever(similarity_top_k=k, filters=filters).retrieve(query)
+    retriever = index.as_retriever(similarity_top_k=k, filters=build_filters(type_, doc_names))
+    best: dict[str, NodeWithScore] = {}
+    for q in search_queries(query, translate):
+        for n in retriever.retrieve(q):
+            if n.node.node_id not in best or (n.score or 0) > (best[n.node.node_id].score or 0):
+                best[n.node.node_id] = n
+    return sorted(best.values(), key=lambda n: n.score or 0, reverse=True)[:k]
 
 
-def search_images(query: str, k: int = 3) -> list[tuple]:
-    """Recherche texte -> image avec CLIP. Renvoie [(node, similarité)]."""
+def search_images(query: str, k: int = 3, doc_names: list[str] | None = None) -> list[tuple]:
+    """Recherche texte -> image avec CLIP (requête anglaise si disponible)."""
     from maintidoc.retrieval.clip_encoder import embed_text
-    res = image_store().query(VectorStoreQuery(query_embedding=embed_text(query),
-                                               similarity_top_k=k))
+    q = search_queries(query)[-1]          # CLIP comprend surtout l'anglais
+    res = image_store().query(VectorStoreQuery(query_embedding=embed_text(q),
+                                               similarity_top_k=k,
+                                               filters=build_filters(None, doc_names)))
     return list(zip(res.nodes or [], res.similarities or []))
 
 

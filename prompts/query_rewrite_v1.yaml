@@ -1,0 +1,9 @@
+version: query_rewrite_v1
+prompt: |
+  Traduis la question suivante en une requête de recherche en anglais technique, pour
+  interroger des manuels de maintenance rédigés en anglais. Choisis le terme technique
+  précis quand le mot français est ambigu (ex. « tension » au moteur -> voltage ;
+  « tension » d'une courroie -> belt tension). Ne réponds pas à la question.
+  Renvoie uniquement la requête, sur une ligne.
+
+  Question : {question}

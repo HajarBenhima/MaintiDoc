@@ -18,6 +18,9 @@ PG = dict(
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_LLM = os.getenv("OLLAMA_LLM", "qwen2.5:7b")
 OLLAMA_VLM = os.getenv("OLLAMA_VLM", "qwen2.5vl:7b")
+LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "16384"))     # contexte du LLM (tokens)
+# Reformulation de la requête en anglais (corpus anglophone, questions en français)
+QUERY_TRANSLATION = os.getenv("QUERY_TRANSLATION", "true").lower() == "true"
 
 TEXT_EMBED_MODEL = os.getenv("TEXT_EMBED_MODEL", "BAAI/bge-m3")
 TEXT_EMBED_DIM = int(os.getenv("TEXT_EMBED_DIM", "1024"))
@@ -34,6 +37,9 @@ PROMPTS_DIR = PROJECT_ROOT / "prompts"
 
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 64
+# Pages OCR (tableaux de dépannage...) : passages plus courts, une cause/action par passage
+OCR_CHUNK_SIZE = 160
+OCR_CHUNK_OVERLAP = 20
 
 
 def load_prompt(name: str) -> dict:

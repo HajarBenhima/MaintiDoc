@@ -5,11 +5,18 @@ Tableaux : deux méthodes complémentaires
   1. ancrage sur la légende « Table N: » + filets horizontaux (tableaux style LaTeX/booktabs,
      sans bordures verticales, que find_tables() découpe mal) ;
   2. page.find_tables() pour les tableaux à bordures (fréquents dans les manuels techniques).
-Images : PyMuPDF extract_image -> PNG dans data/images/<document_id>/.
+Images :
+  - images bitmap : extract_image -> PNG dans data/images/<document_id>/ ;
+  - figures vectorielles : zone de dessin (cluster_drawings) au-dessus de la légende
+    « FIGURE N », rendue en PNG ;
+  - pages scannées (peu de texte extractible) : les images sont marquées « needs_ocr »
+    pour être transcrites par le VLM lors de l'indexation.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 import re
+import shutil
 
 import pymupdf
 from llama_index.core import Document
@@ -19,7 +26,14 @@ from maintidoc.config import IMAGE_DIR
 
 MIN_IMG_SIZE = 100       # ignore logos / icônes
 CAPTION_RE = re.compile(r"^(Table|Tableau)\s+(\d+)\s*[:.]", re.IGNORECASE)
-FIGURE_RE = re.compile(r"^(Figure|Fig\.|Schéma)\s*(\d+)\s*[:.]", re.IGNORECASE)
+FIGURE_RE = re.compile(r"^(Figure|Fig\.|Schéma)\s*(\d+)\s*(?:[:.]|$)", re.IGNORECASE)
+FIG_MAX_GAP = 60         # écart max (pt) entre une légende de figure et son dessin
+FIG_MIN_SIZE = 40        # taille min (pt) d'un groupe de tracés
+RENDER_DPI = 150
+SCANNED_TEXT_MAX = 150   # en dessous de ce nb de caractères, la page est considérée scannée
+OCR_DPI = 300
+OCR_MAX_CELLS = 5        # au-delà, une ligne OCR est une matrice de cases illisible
+OCR_LANG = os.getenv("OCR_LANG", "eng")   # ex. "eng+fra" si le pack français est installé
 RULE_MAX_GAP = 90        # écart max (pt) entre deux filets d'un même tableau
 CAPTION_MAX_GAP = 40     # écart max (pt) entre la légende et le premier filet
 COL_GAP = 8              # écart horizontal (pt) qui sépare deux colonnes
@@ -73,9 +87,10 @@ def _chain(rules: list[float], start: float, forward: bool) -> list[float]:
     return sorted(out)
 
 
-def _rows_text(page, rect) -> str:
-    """Reconstitue les lignes du tableau ; « | » entre colonnes éloignées."""
-    words = sorted(page.get_text("words", clip=rect), key=lambda w: (round(w[3]), w[0]))
+def _rows_text(page, rect=None, textpage=None) -> str:
+    """Reconstitue les lignes (tableau ou page OCR) ; « | » entre colonnes éloignées."""
+    words = sorted(page.get_text("words", clip=rect, textpage=textpage),
+                   key=lambda w: (round(w[3]), w[0]))
     lines, current, last_y = [], [], None
     for w in words:
         if last_y is not None and abs(w[3] - last_y) > 3:
@@ -138,6 +153,31 @@ def _extract_tables(page, pno: int, base_meta: dict) -> list[Document]:
     return docs
 
 
+# ---------------------------------------------------------------- OCR
+def _tesseract_available() -> bool:
+    return shutil.which("tesseract") is not None
+
+
+def is_scanned(page) -> bool:
+    """Page dont le texte n'est pas extractible mais qui contient des images."""
+    return len(page.get_text().strip()) < SCANNED_TEXT_MAX and bool(page.get_images())
+
+
+def _is_noise(line: str) -> bool:
+    """Ligne OCR inexploitable : matrice de cases (beaucoup de « | ») ou peu de vrais mots."""
+    if line.count("|") > OCR_MAX_CELLS:
+        return True
+    return len(line.strip()) < 6 or not re.search(r"[A-Za-zÀ-ÿ]{4,}", line)
+
+
+def ocr_page(page) -> str:
+    """OCR Tesseract de la page entière, lignes reconstruites avec séparateurs de colonnes.
+    Les lignes de bruit (matrices de « X » mal reconnues) sont écartées."""
+    tp = page.get_textpage_ocr(dpi=OCR_DPI, full=True, language=OCR_LANG)
+    lines = _rows_text(page, textpage=tp).splitlines()
+    return "\n".join(l for l in lines if not _is_noise(l))
+
+
 # ---------------------------------------------------------------- images
 def _figure_captions(page) -> list[tuple[str, str, pymupdf.Rect]]:
     """Légendes « Figure N: » de la page : [(numéro, texte, bbox)]."""
@@ -162,9 +202,62 @@ def _closest_caption(captions, img_rect):
     return min(captions, key=dist)
 
 
+def _vector_figure_rect(page, caption_rect, clusters, upper_limit=0.0,
+                        lower_limit=None) -> pymupdf.Rect | None:
+    """Zone de dessin associée à une légende : groupes de tracés juste au-dessus
+    (ou, à défaut, juste en dessous), chaînés tant qu'ils restent proches.
+    Les groupes au-delà des légendes voisines (upper/lower_limit) sont ignorés."""
+    lower_limit = page.rect.y1 if lower_limit is None else lower_limit
+
+    def grow(candidates, above: bool):
+        region = None
+        for r in sorted(candidates, key=lambda r: -r.y1 if above else r.y0):
+            edge = caption_rect.y0 if region is None and above else (
+                caption_rect.y1 if region is None else (region.y0 if above else region.y1))
+            close = (r.y1 >= edge - FIG_MAX_GAP) if above else (r.y0 <= edge + FIG_MAX_GAP)
+            if close:
+                region = r if region is None else region | r
+        return region
+
+    above = [r for r in clusters if upper_limit <= r.y0 < caption_rect.y0]
+    below = [r for r in clusters if caption_rect.y1 - 5 <= r.y0 and r.y1 <= lower_limit]
+    return grow(above, True) or grow(below, False)
+
+
+def _extract_vector_figures(page, pno, base_meta, out_dir, captions, done_numbers) -> list[dict]:
+    clusters = [pymupdf.Rect(r) for r in page.cluster_drawings()]
+    clusters = [r for r in clusters if r.width > FIG_MIN_SIZE and r.height > FIG_MIN_SIZE]
+    figures = []
+    caps = sorted(captions, key=lambda c: c[2].y0)
+    for i, (num, caption, cap_rect) in enumerate(caps):
+        if num in done_numbers:          # déjà couverte par une image bitmap
+            continue
+        upper = caps[i - 1][2].y1 if i > 0 else 0.0
+        lower = caps[i + 1][2].y0 if i + 1 < len(caps) else None
+        region = _vector_figure_rect(page, cap_rect, clusters, upper, lower)
+        if region is None:
+            continue
+        clip = (region | cap_rect) + (-5, -5, 5, 5)
+        path = out_dir / f"p{pno}_figure{num}.png"
+        page.get_pixmap(clip=clip & page.rect, dpi=RENDER_DPI).save(path)
+        figures.append({
+            **base_meta, "page": pno, "type": "image",
+            "element_id": f"figure_{num}",
+            "figure_label": f"Figure {num}", "figure_caption": caption,
+            "image_path": str(path), "vector": True,
+            "width": round(clip.width * RENDER_DPI / 72),
+            "height": round(clip.height * RENDER_DPI / 72),
+        })
+    return figures
+
+
 def _extract_images(pdf, page, pno: int, base_meta: dict, out_dir: Path) -> list[dict]:
     images = []
     captions = _figure_captions(page)
+    # Page scannée : OCR Tesseract si disponible (voir parse_pdf), sinon transcription VLM
+    if is_scanned(page) and _tesseract_available():
+        return []
+    scanned = is_scanned(page)
     for i_idx, img in enumerate(page.get_images(full=True)):
         xref = img[0]
         info = pdf.extract_image(xref)
@@ -186,7 +279,10 @@ def _extract_images(pdf, page, pno: int, base_meta: dict, out_dir: Path) -> list
             "figure_caption": cap[1] if cap else "",
             "image_path": str(path),
             "width": info["width"], "height": info["height"],
+            "needs_ocr": scanned,
         })
+    done = {im["figure_label"].split()[-1] for im in images if im["figure_label"]}
+    images += _extract_vector_figures(page, pno, base_meta, out_dir, captions, done)
     return images
 
 
@@ -194,7 +290,7 @@ def _extract_images(pdf, page, pno: int, base_meta: dict, out_dir: Path) -> list
 def parse_pdf(pdf_path: str | Path, extract_images: bool = True) -> ParsedPDF:
     pdf_path = Path(pdf_path)
     doc_id = make_document_id(pdf_path)
-    base_meta = {"document_id": doc_id, "source": pdf_path.name}
+    base_meta = {"doc_name": doc_id, "source": pdf_path.name}
     result = ParsedPDF(document_id=doc_id, source=pdf_path.name)
 
     # 1. Texte (un Document LlamaIndex par page)
@@ -210,6 +306,14 @@ def parse_pdf(pdf_path: str | Path, extract_images: bool = True) -> ParsedPDF:
     out_dir.mkdir(parents=True, exist_ok=True)
     with pymupdf.open(pdf_path) as pdf:
         for pno, page in enumerate(pdf, start=1):
+            if is_scanned(page) and _tesseract_available():
+                text = ocr_page(page)
+                if text.strip():
+                    result.text_docs = [d for d in result.text_docs if d.metadata["page"] != pno]
+                    result.text_docs.append(Document(
+                        text=f"Page {pno} (texte obtenu par OCR) :\n{text}",
+                        metadata={**base_meta, "page": pno, "type": "text", "ocr": True}))
+                continue
             result.table_docs += _extract_tables(page, pno, base_meta)
             if extract_images:
                 result.images += _extract_images(pdf, page, pno, base_meta, out_dir)

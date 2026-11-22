@@ -16,11 +16,18 @@ class AskRequest(BaseModel):
     question: str
     thread_id: str = "default"
     agentic: bool = True
+    doc_names: list[str] | None = None
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/documents")
+def documents():
+    from maintidoc.retrieval.stores import list_documents
+    return list_documents()
 
 
 @app.post("/ingest")
@@ -36,6 +43,6 @@ def ingest_pdf(file: UploadFile, with_captions: bool = True):
 def ask(req: AskRequest):
     if req.agentic:
         from maintidoc.agent.agent import ask as agent_ask
-        return agent_ask(req.question, thread_id=req.thread_id)
+        return agent_ask(req.question, thread_id=req.thread_id, doc_names=req.doc_names)
     from maintidoc.rag.pipeline import answer
-    return answer(req.question)
+    return answer(req.question, doc_names=req.doc_names)

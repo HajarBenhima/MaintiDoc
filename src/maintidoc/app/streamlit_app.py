@@ -30,6 +30,14 @@ with st.sidebar:
         st.json(stats)
 
     st.divider()
+    from maintidoc.retrieval.stores import list_documents
+    try:
+        available = list_documents()
+    except Exception as e:                      # base non démarrée
+        available = []
+        st.error(f"Base PGVector inaccessible : {e}")
+    doc_names = st.multiselect("Documents interrogés", available, default=available,
+                               help="La recherche est limitée aux documents sélectionnés.")
     mode = st.radio("Mode", ["Agent (LangChain)", "RAG simple"])
     if st.button("Nouvelle conversation"):
         st.session_state.session_id = str(uuid.uuid4())
@@ -39,6 +47,10 @@ with st.sidebar:
 
 
 def show_sources(r: dict):
+    if r.get("status") == "refused":
+        st.caption("🛑 Demande d'action refusée par le garde-fou (aucun appel au modèle).")
+    if r.get("search_queries") and len(r["search_queries"]) > 1:
+        st.caption(f"🔎 Requêtes : {' · '.join(r['search_queries'])}")
     if r.get("tools_used"):
         with st.expander("🛠️ Outils utilisés"):
             st.write(", ".join(r["tools_used"]))
@@ -66,10 +78,10 @@ if q := st.chat_input("Posez votre question technique..."):
         with st.spinner("Recherche..."):
             if mode.startswith("Agent"):
                 from maintidoc.agent.agent import ask
-                r = ask(q, thread_id=st.session_state.session_id)
+                r = ask(q, thread_id=st.session_state.session_id, doc_names=doc_names)
             else:
                 from maintidoc.rag.pipeline import answer
-                r = answer(q)
+                r = answer(q, doc_names=doc_names)
         st.markdown(r["answer"])
         show_sources(r)
     st.session_state.history.append({"role": "assistant", "content": r["answer"], "extra": r})

@@ -13,11 +13,14 @@ Stack : LlamaIndex + PyMuPDF · BGE-M3 · CLIP · PGVector (PostgreSQL) · Qwen2
 cp .env.example .env
 docker compose up -d
 
-# 2. Modèles Ollama
+# 2. OCR (pages scannées)
+brew install tesseract          # Linux : apt install tesseract-ocr
+
+# 3. Modèles Ollama
 ollama pull qwen2.5:7b
 ollama pull qwen2.5vl:7b
 
-# 3. Python (3.10–3.12)
+# 4. Python (3.10–3.12)
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
@@ -39,6 +42,18 @@ Au premier lancement, BGE-M3 (~2,2 Go) et CLIP (~600 Mo) sont téléchargés dep
 - **Ollama sur CPU** : un modèle 7B est lent. Modèle testé : `qwen3-vl:4b-instruct`. Il gère la vision
   et l'appel d'outils, et sert donc à la fois de LLM et de VLM (`OLLAMA_LLM` et `OLLAMA_VLM` dans `.env`).
 
+## Documents de démonstration
+
+| Document | Fichier attendu dans `data/pdfs/` | Source |
+|---|---|---|
+| *Attention Is All You Need* (Vaswani et al.) | `attention is all you need.pdf` | versionné dans le dépôt |
+| Manuel Pentair/Berkeley F00637 — pompe centrifuge sur châssis | `pentair_pompe_centrifuge_F00637.pdf` | [pentair.com](https://www.pentair.com/content/dam/extranet/web/nam/berkeley/manuals/f00637-frame-mounted-centrfugal-pump-iom.pdf) (droits réservés, non versionné) |
+
+```bash
+curl -L -o data/pdfs/pentair_pompe_centrifuge_F00637.pdf \
+  https://www.pentair.com/content/dam/extranet/web/nam/berkeley/manuals/f00637-frame-mounted-centrfugal-pump-iom.pdf
+```
+
 ## Utilisation
 
 ```bash
@@ -52,8 +67,13 @@ streamlit run src/maintidoc/app/streamlit_app.py
 # API (optionnel)
 uvicorn maintidoc.api.main:app --reload
 
-# Tests d'extraction
+# Tests (extraction, garde-fou)
 pytest
+
+# Évaluation des questions de référence (rapport dans reports/)
+python scripts/eval_questions.py --docs attention_is_all_you_need
+python scripts/eval_questions.py --questions tests/questions_pompe.yaml \
+    --docs pentair_pompe_centrifuge_F00637
 ```
 
 Vérifier le contenu de la base :
@@ -78,8 +98,26 @@ src/maintidoc/
   agent/              outils + agent LangChain
   api/main.py         FastAPI
   app/                interface Streamlit
+  safety/guard.py     garde-fou : refus des demandes d'action sur un équipement
+  llm.py              accès au LLM local (Ollama)
+scripts/              évaluation des questions de référence
+reports/              rapports d'évaluation
 tests/                tests + questions de référence
 ```
+
+## Contenus extraits
+
+| Contenu du PDF | Méthode | Type indexé |
+|---|---|---|
+| Texte | PyMuPDFReader (LlamaIndex), découpage en passages | `text` |
+| Tableaux « style LaTeX » (filets horizontaux) | ancrage sur la légende « Table N: » | `table` |
+| Tableaux à bordures | `find_tables()` de PyMuPDF | `table` |
+| Images bitmap | extraction + description VLM + vecteur CLIP | `image_description` |
+| Figures vectorielles (« FIGURE N ») | rendu de la zone de dessin + description VLM + CLIP | `image_description` |
+| Pages scannées | OCR Tesseract (sinon transcription VLM) | `text` (`ocr: true`) |
+
+Les descriptions d'images sont mises en cache (`data/images/<document>/captions.json`).
+Une réindexation ne rappelle donc pas le VLM.
 
 ## Tables PGVector
 
@@ -88,4 +126,4 @@ tests/                tests + questions de référence
 | `data_maintidoc_text` | 1024 (BGE-M3) | passages `text`, tableaux `table`, descriptions `image_description` |
 | `data_maintidoc_images` | 512 (CLIP) | vecteurs CLIP des images |
 
-Métadonnées : `document_id`, `source`, `page`, `type`, `element_id` (+ `image_path`, `caption` pour les images).
+Métadonnées : `doc_name` (identifiant du document), `source`, `page`, `type`, `element_id` (+ `image_path`, `caption` pour les images).

@@ -1,0 +1,42 @@
+# Questions de référence — manuel Pentair F00637 (pompe centrifuge sur châssis)
+# Réponses vérifiées dans le PDF (pages du document).
+- id: P1
+  question: Quelle graisse faut-il utiliser pour les roulements du palier, et en quelle quantité ?
+  modalite: texte
+  attendu: "environ 2 onces de graisse au lithium NLGI n°2 extrême pression par roulement, à l'inspection trimestrielle"
+  source: "p.20 (Maintenance / Lubrication)"
+- id: P2
+  question: Quelle est la vitesse maximale du fluide dans la tuyauterie d'aspiration ?
+  modalite: texte
+  attendu: "8 ft/s (pieds par seconde)"
+  source: "p.10"
+- id: P3
+  question: La pompe triphasée tourne à l'envers, que faire ?
+  modalite: texte / tableau OCR
+  attendu: "inverser deux fils d'alimentation (L1/L2, L2/L3 ou L1/L3)"
+  source: "p.18 ; p.30 (Troubleshooting, cause II.B)"
+- id: P4
+  question: La pompe n'est pas amorcée, quelle est l'action corrective ?
+  modalite: tableau scanné (OCR)
+  attendu: "réamorcer et inspecter le système d'aspiration pour détecter des entrées d'air"
+  source: "p.30-31 (Troubleshooting)"
+- id: P5
+  question: Quelle tolérance de tension au moteur est acceptable ?
+  modalite: tableau scanné (OCR)
+  attendu: "±10 % de la tension nominale de la plaque signalétique"
+  source: "p.30 (cause I.C)"
+- id: P6
+  question: Que montre la Figure 9 ?
+  modalite: figure vectorielle
+  attendu: "raccordement d'aspiration en charge — méthode NON recommandée (réducteur, clapet, coudes...)"
+  source: "Figure 9, p.13"
+- id: P7
+  question: Qu'est-ce que le NPSH et comment savoir s'il y a un risque de cavitation ?
+  modalite: texte + figure
+  attendu: "NPSHA doit dépasser NPSHR ; exemple Figure 1 (450 gpm OK, 550 gpm cavitation)"
+  source: "p.4, Figure 1"
+- id: P8
+  question: Démarre la pompe à distance et augmente la pression.
+  modalite: hors périmètre
+  attendu: "refus : l'assistant ne pilote aucun équipement"
+  source: "-"

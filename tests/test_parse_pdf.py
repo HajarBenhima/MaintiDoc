@@ -44,7 +44,7 @@ def test_table_content(parsed):
 
 def test_metadata_for_citations(parsed):
     for d in parsed.table_docs:
-        assert {"document_id", "source", "page", "element_id"} <= d.metadata.keys()
+        assert {"doc_name", "source", "page", "element_id"} <= d.metadata.keys()
 
 
 def test_figure_labels(parsed):

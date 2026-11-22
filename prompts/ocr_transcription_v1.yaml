@@ -1,0 +1,8 @@
+version: ocr_transcription_v1
+prompt: |
+  Cette image est une page scannée d'un document technique de maintenance.
+  Transcris fidèlement TOUT son contenu textuel, dans la langue d'origine.
+  - Les tableaux doivent être rendus en tableaux Markdown, en conservant les en-têtes,
+    toutes les lignes et la position exacte des marques (X, ✓).
+  - Conserve les titres, numérotations et listes.
+  - N'ajoute aucun commentaire, aucune interprétation, aucune information absente de l'image.
