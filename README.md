@@ -29,7 +29,7 @@ pip install -e .
 
 Au premier lancement, BGE-M3 (~2,2 Go) et CLIP (~600 Mo) sont téléchargés depuis Hugging Face.
 
-### ⚠️ Mac Intel (x86_64)
+### Mac Intel (x86_64)
 
 - **PyMuPDF** : les dernières versions n'ont pas de paquet précompilé pour Intel. Installer avec
   `pip install --only-binary=pymupdf -r requirements.txt` (sinon pip tente une compilation qui échoue).
